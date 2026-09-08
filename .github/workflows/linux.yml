@@ -12,30 +12,73 @@ jobs:
       - name: Install XFCE and XRDP
         run: |
           sudo apt update
+
           sudo DEBIAN_FRONTEND=noninteractive apt install -y \
             xfce4 \
             xfce4-goodies \
+            xfce4-session \
             xrdp \
+            xorgxrdp \
             dbus-x11
+
+          # Configure XRDP to launch XFCE
+          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+          #!/bin/sh
+
+          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg:/etc/xdg
+          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          exec dbus-launch --exit-with-session startxfce4
+          EOF
+
+          sudo chmod +x /etc/xrdp/startwm.sh
+
+          # Configure XRDP
+          sudo sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini
 
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
+
+          sleep 3
+
+          sudo systemctl status xrdp --no-pager
 
       - name: Create RDP User
         run: |
           PASSWORD=$(openssl rand -base64 18)
 
+          # Create user
           sudo useradd -m -s /bin/bash RDP
+
+          # Set password
           echo "RDP:$PASSWORD" | sudo chpasswd
 
-          echo "xfce4-session" | sudo tee /home/RDP/.xsession
+          # Give sudo access
+          sudo usermod -aG sudo RDP
+
+          # Configure XFCE session
+          echo "startxfce4" | sudo tee /home/RDP/.xsession > /dev/null
+
           sudo chown RDP:RDP /home/RDP/.xsession
+          sudo chmod 644 /home/RDP/.xsession
 
           echo "RDP_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          echo "RDP user created."
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
+
+          if ! command -v tailscale >/dev/null 2>&1; then
+            echo "Tailscale installation failed."
+            exit 1
+          fi
+
+          echo "Tailscale installed."
 
       - name: Connect Tailscale
         run: |
@@ -43,39 +86,76 @@ jobs:
             --auth-key=${{ secrets.TAILSCALE_AUTH_KEY }} \
             --hostname=gh-linux-rdp-$GITHUB_RUN_ID
 
+          TSIP=""
+
           for i in {1..20}; do
-            TSIP=$(tailscale ip -4 2>/dev/null | head -n1)
+            TSIP=$(sudo tailscale ip -4 2>/dev/null | head -n1)
 
             if [ -n "$TSIP" ]; then
               break
             fi
 
+            echo "Waiting for Tailscale IP..."
             sleep 3
           done
 
           if [ -z "$TSIP" ]; then
-            echo "Tailscale IP not found"
+            echo "Tailscale IP was not assigned."
             exit 1
           fi
 
           echo "TAILSCALE_IP=$TSIP" >> "$GITHUB_ENV"
 
+          echo "Tailscale connected: $TSIP"
+
+      - name: Configure Firewall
+        run: |
+          sudo ufw allow 3389/tcp 2>/dev/null || true
+
+          # Make sure XRDP is running
+          sudo systemctl restart xrdp
+
+          sleep 2
+
+          if ! sudo systemctl is-active --quiet xrdp; then
+            echo "XRDP failed to start."
+            sudo systemctl status xrdp --no-pager
+            exit 1
+          fi
+
+          echo "XRDP is running."
+
+      - name: Verify RDP
+        run: |
+          echo "Testing local RDP port..."
+
+          if ! timeout 5 bash -c '</dev/tcp/127.0.0.1/3389' 2>/dev/null; then
+            echo "RDP port 3389 is not listening."
+            sudo ss -lntp | grep 3389 || true
+            exit 1
+          fi
+
+          echo "RDP port 3389 is accessible."
+
       - name: Show RDP Information
         run: |
           echo ""
           echo "=========================================="
-          echo "             LINUX RDP ACCESS"
+          echo "           LINUX RDP ACCESS"
           echo "=========================================="
           echo "Address:  $TAILSCALE_IP"
+          echo "Port:     3389"
           echo "Username: RDP"
           echo "Password: $RDP_PASSWORD"
           echo "Desktop:  XFCE"
           echo "=========================================="
           echo ""
+          echo "Connect using any RDP client."
+          echo "=========================================="
 
-      - name: Keep RDP Alive
+      - name: Maintain Connection
         run: |
           while true; do
-            echo "[$(date)] Linux RDP is active"
+            echo "[$(date)] Linux RDP active"
             sleep 300
           done
