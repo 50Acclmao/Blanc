@@ -21,28 +21,32 @@ jobs:
             xorgxrdp \
             dbus-x11
 
-          # Allow XRDP to access its certificates
+          # XRDP needs access to its certificate
           sudo adduser xrdp ssl-cert || true
 
-          # Configure XRDP to start XFCE
+          # Configure XRDP security/session settings
+          sudo sed -i 's/^security_layer=.*/security_layer=rdp/' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/^crypt_level=.*/crypt_level=low/' /etc/xrdp/xrdp.ini
+
+          # Configure XRDP to launch XFCE
           sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
           #!/bin/sh
 
-          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg:/etc/xdg
-          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-
           unset DBUS_SESSION_BUS_ADDRESS
           unset XDG_RUNTIME_DIR
+
+          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
+          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
 
           exec dbus-run-session -- startxfce4
           EOF
 
           sudo chmod +x /etc/xrdp/startwm.sh
 
-          # Configure XRDP to use Xorg
+          # Configure the RDP port
           sudo sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini
 
-          # Enable and restart XRDP
+          # Enable XRDP
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
           sudo systemctl restart xrdp-sesman
@@ -52,10 +56,10 @@ jobs:
           echo "=== XRDP STATUS ==="
           sudo systemctl status xrdp --no-pager || true
 
-          echo "=== XRDP SESMAN STATUS ==="
+          echo "=== XRDP SESMAN ==="
           sudo systemctl status xrdp-sesman --no-pager || true
 
-          echo "=== PORT 3389 ==="
+          echo "=== PORT ==="
           sudo ss -lntp | grep 3389 || true
 
       - name: Create RDP User
@@ -68,10 +72,10 @@ jobs:
           # Set password
           echo "RDP:$PASSWORD" | sudo chpasswd
 
-          # Add sudo access
+          # Give sudo access
           sudo usermod -aG sudo RDP
 
-          # Create XFCE session file
+          # Configure XFCE
           sudo tee /home/RDP/.xsession > /dev/null <<'EOF'
           #!/bin/sh
           exec dbus-run-session -- startxfce4
@@ -80,18 +84,12 @@ jobs:
           sudo chown RDP:RDP /home/RDP/.xsession
           sudo chmod +x /home/RDP/.xsession
 
-          # Make sure the home directory has correct ownership
+          # Correct home permissions
           sudo chown -R RDP:RDP /home/RDP
 
           echo "RDP_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
 
-          # Verify user
-          if ! id RDP >/dev/null 2>&1; then
-            echo "Failed to create RDP user."
-            exit 1
-          fi
-
-          echo "RDP user created successfully."
+          echo "RDP user created."
 
       - name: Install Tailscale
         run: |
@@ -102,7 +100,7 @@ jobs:
             exit 1
           fi
 
-          echo "Tailscale installed."
+          echo "Tailscale installed successfully."
 
       - name: Connect Tailscale
         run: |
@@ -134,19 +132,17 @@ jobs:
 
       - name: Configure Firewall
         run: |
-          # Allow RDP
           sudo ufw allow 3389/tcp 2>/dev/null || true
 
-          # Restart XRDP after firewall configuration
           sudo systemctl restart xrdp
           sudo systemctl restart xrdp-sesman
 
           sleep 3
 
-          echo "=== XRDP STATUS ==="
+          echo "=== XRDP ACTIVE ==="
           sudo systemctl is-active xrdp
 
-          echo "=== LISTENING PORTS ==="
+          echo "=== PORT 3389 ==="
           sudo ss -lntp | grep 3389 || true
 
       - name: Verify RDP
@@ -158,17 +154,9 @@ jobs:
           else
             echo "RDP port 3389 is NOT accessible."
 
-            echo "=== XRDP STATUS ==="
             sudo systemctl status xrdp --no-pager || true
-
-            echo "=== XRDP SESMAN STATUS ==="
             sudo systemctl status xrdp-sesman --no-pager || true
-
-            echo "=== XRDP LOG ==="
-            sudo tail -100 /var/log/xrdp.log || true
-
-            echo "=== SESMAN LOG ==="
-            sudo tail -100 /var/log/xrdp-sesman.log || true
+            sudo ss -lntp | grep 3389 || true
 
             exit 1
           fi
@@ -177,16 +165,17 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "            LINUX RDP ACCESS"
+          echo "             LINUX RDP ACCESS"
           echo "=========================================="
           echo "Address:  $TAILSCALE_IP"
           echo "Port:     3389"
           echo "Username: RDP"
           echo "Password: $RDP_PASSWORD"
           echo "Desktop:  XFCE"
+          echo "Security: RDP"
           echo "=========================================="
           echo ""
-          echo "Use an RDP client and connect to:"
+          echo "Connect to:"
           echo "$TAILSCALE_IP:3389"
           echo ""
           echo "=========================================="
@@ -203,7 +192,7 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "              XRDP LOGS"
+          echo "              XRDP DEBUG LOGS"
           echo "=========================================="
 
           echo ""
@@ -212,16 +201,4 @@ jobs:
 
           echo ""
           echo "=== XRDP SESMAN ==="
-          sudo systemctl status xrdp-sesman --no-pager || true
-
-          echo ""
-          echo "=== XRDP LOG ==="
-          sudo tail -100 /var/log/xrdp.log || true
-
-          echo ""
-          echo "=== SESMAN LOG ==="
-          sudo tail -100 /var/log/xrdp-sesman.log || true
-
-          echo ""
-          echo "=== RDP PORT ==="
-          sudo ss -lntp | grep 3389 || true
+         
