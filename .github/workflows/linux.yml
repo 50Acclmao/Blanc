@@ -26,8 +26,8 @@ jobs:
           sudo adduser xrdp ssl-cert || true
 
           # Configure XRDP security/session settings
-          sudo sed -i 's/^security_layer=.*/security_layer=rdp/' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/^crypt_level=.*/crypt_level=low/' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/^security_layer=.*/security_layer=negotiate/' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/^crypt_level=.*/crypt_level=high/' /etc/xrdp/xrdp.ini
 
           # Configure XRDP to launch XFCE
           sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
@@ -67,8 +67,8 @@ jobs:
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt install -y wamerican
 
-          # Generate an easy-to-type password: 4 random words + a number
-          PASSWORD=$(shuf -n 4 /usr/share/dict/words | tr -d "'" | tr '\n' '-' | sed 's/-$//')
+          # Generate an easy-to-type password: 2 random words + a number
+          PASSWORD=$(shuf -n 2 /usr/share/dict/words | tr -d "'" | tr '\n' '-' | sed 's/-$//')
           PASSWORD="$PASSWORD-$((RANDOM % 900 + 100))"
 
           # Create user
