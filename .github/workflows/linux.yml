@@ -65,7 +65,11 @@ jobs:
 
       - name: Create RDP User
         run: |
-          PASSWORD=$(openssl rand -base64 18)
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y wamerican
+
+          # Generate an easy-to-type password: 4 random words + a number
+          PASSWORD=$(shuf -n 4 /usr/share/dict/words | tr -d "'" | tr '\n' '-' | sed 's/-$//')
+          PASSWORD="$PASSWORD-$((RANDOM % 900 + 100))"
 
           # Create user
           sudo useradd -m -s /bin/bash RDP
