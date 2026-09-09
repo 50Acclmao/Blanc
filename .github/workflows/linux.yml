@@ -19,7 +19,8 @@ jobs:
             xfce4-session \
             xrdp \
             xorgxrdp \
-            dbus-x11
+            dbus-x11 \
+            policykit-1
 
           # XRDP needs access to its certificate
           sudo adduser xrdp ssl-cert || true
@@ -75,9 +76,17 @@ jobs:
           # Give sudo access
           sudo usermod -aG sudo RDP
 
-          # Configure XFCE
+          # Configure XFCE (matches /etc/xrdp/startwm.sh exactly,
+          # since xrdp prefers ~/.xsession over startwm.sh when it exists)
           sudo tee /home/RDP/.xsession > /dev/null <<'EOF'
           #!/bin/sh
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
+          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+
           exec dbus-run-session -- startxfce4
           EOF
 
@@ -187,6 +196,13 @@ jobs:
             sleep 300
           done
 
+      - name: Show Session Log
+        if: always()
+        run: |
+          cat /var/log/xrdp-sesman.log 2>/dev/null || true
+          cat /home/RDP/.xorgxrdp.log 2>/dev/null || true
+          cat /home/RDP/.xsession-errors 2>/dev/null || true
+
       - name: Show XRDP Logs
         if: always()
         run: |
@@ -201,4 +217,4 @@ jobs:
 
           echo ""
           echo "=== XRDP SESMAN ==="
-         
+          sudo systemctl status xrdp-sesman --no-pager || true
