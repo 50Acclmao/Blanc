@@ -1,4 +1,4 @@
-name: RDP-1
+name: RDP-2022
 
 on:
   workflow_dispatch:
