@@ -1,14 +1,40 @@
-name: RDP-1
+name: RDP-2022
 
 on:
   workflow_dispatch:
+    inputs:
+      deadline:
+        description: "Leave empty. Used by auto-restart to keep the 24h deadline"
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 3600
+    runs-on: windows-2022
+    timeout-minutes: 360
 
     steps:
+      - name: Set 24h Deadline
+        run: |
+          $deadline = "${{ github.event.inputs.deadline }}"
+
+          if ([string]::IsNullOrWhiteSpace($deadline)) {
+            $deadline = [DateTimeOffset]::UtcNow.AddHours(24).ToUnixTimeSeconds()
+          }
+
+          "DEADLINE=$deadline" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          $endTime = [DateTimeOffset]::FromUnixTimeSeconds([long]$deadline).UtcDateTime
+          Write-Host "Session deadline: $endTime UTC"
+
       - name: Configure Core RDP Settings
         run: |
           # Enable Remote Desktop
@@ -48,24 +74,64 @@ jobs:
 
           Write-Host "RDP configured successfully."
 
+      - name: Lighten Windows
+        run: |
+          # High performance power plan
+          try { powercfg /setactive SCHEME_MIN } catch {}
+
+          # Turn off Defender real-time scanning
+          try { Set-MpPreference -DisableRealtimeMonitoring $true } catch {}
+
+          # Stop and disable heavy background services
+          $services = @("WSearch", "wuauserv", "UsoSvc", "SysMain", "DiagTrack", "DoSvc", "MapsBroker")
+          foreach ($svc in $services) {
+            try {
+              Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
+              Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+            } catch {}
+          }
+
+          # RDP side: no wallpaper, 16-bit color
+          try {
+            $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+            if (-not (Test-Path $ts)) { New-Item -Path $ts -Force | Out-Null }
+            Set-ItemProperty -Path $ts -Name "fNoRemoteDesktopWallpaper" -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $ts -Name "ColorDepth" -Value 3 -Type DWord -Force
+          } catch {}
+
+          # Best performance visual settings for new users (applies to the RDP user)
+          try {
+            reg load HKU\DefUser C:\Users\Default\NTUSER.DAT
+            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f
+            reg add "HKU\DefUser\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
+            reg add "HKU\DefUser\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
+            reg add "HKU\DefUser\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d 0 /f
+            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f
+            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations /t REG_DWORD /d 0 /f
+            [gc]::Collect()
+            Start-Sleep -Seconds 2
+            reg unload HKU\DefUser
+          } catch {}
+
+          Write-Host "Windows lightened."
+
       - name: Create RDP User with Secure Password
         run: |
           Add-Type -AssemblyName System.Security
 
           $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = (
-                  [char[]](33..47) +
-                  [char[]](58..64) +
-                  [char[]](91..96) +
-                  [char[]](123..126)
-              )
+            Upper = [char[]](65..90)
+            Lower = [char[]](97..122)
+            Number = [char[]](48..57)
+            Special = (
+              [char[]](33..47) +
+              [char[]](58..64) +
+              [char[]](91..96) +
+              [char[]](123..126)
+            )
           }
 
           $rawPassword = @()
-
           $rawPassword += $charSet.Upper | Get-Random -Count 4
           $rawPassword += $charSet.Lower | Get-Random -Count 4
           $rawPassword += $charSet.Number | Get-Random -Count 4
@@ -80,7 +146,7 @@ jobs:
 
           # Remove existing user if present
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Remove-LocalUser -Name "RDP"
+            Remove-LocalUser -Name "RDP"
           }
 
           # Create RDP account
@@ -108,8 +174,8 @@ jobs:
 
           # Verify user creation
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              Write-Error "User creation failed"
-              exit 1
+            Write-Error "User creation failed"
+            exit 1
           }
 
           Write-Host "RDP user created successfully."
@@ -118,7 +184,7 @@ jobs:
         run: |
           Write-Host "Installing Visual Studio Code..."
 
-          $url = "https://update.code.visualstudio.com/latest/win32-x64-user/stable"
+          $url = "https://update.code.visualstudio.com/latest/win32-x64/stable"
           $installer = "$env:TEMP\vscode.exe"
 
           Invoke-WebRequest `
@@ -126,36 +192,36 @@ jobs:
             -OutFile $installer
 
           if (-not (Test-Path $installer)) {
-              Write-Error "VS Code installer was not downloaded."
-              exit 1
+            Write-Error "VS Code installer was not downloaded."
+            exit 1
           }
 
           Start-Process `
             -FilePath $installer `
-            -ArgumentList "/VERYSILENT", "/NORESTART", "/MERGETASKS=!runcode" `
+            -ArgumentList "/VERYSILENT", "/NORESTART", "/MERGETASKS=!runcode,desktopicon,addtopath" `
             -Wait
 
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
           # Check common installation paths
           $vscodePaths = @(
-              "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
-              "$env:ProgramFiles\Microsoft VS Code\Code.exe"
+            "$env:ProgramFiles\Microsoft VS Code\Code.exe",
+            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
           )
 
           $installed = $false
 
           foreach ($path in $vscodePaths) {
-              if (Test-Path $path) {
-                  Write-Host "VS Code installed at: $path"
-                  $installed = $true
-                  break
-              }
+            if (Test-Path $path) {
+              Write-Host "VS Code installed at: $path"
+              $installed = $true
+              break
+            }
           }
 
           if (-not $installed) {
-              Write-Error "VS Code installation could not be verified."
-              exit 1
+            Write-Error "VS Code installation could not be verified."
+            exit 1
           }
 
           Write-Host "Visual Studio Code installed successfully."
@@ -179,8 +245,8 @@ jobs:
           Remove-Item $installerPath -Force
 
           if (-not (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
-              Write-Error "Tailscale installation failed."
-              exit 1
+            Write-Error "Tailscale installation failed."
+            exit 1
           }
 
           Write-Host "Tailscale installed successfully."
@@ -196,8 +262,8 @@ jobs:
             --hostname=gh-runner-$env:GITHUB_RUN_ID
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Tailscale connection failed."
-              exit 1
+            Write-Error "Tailscale connection failed."
+            exit 1
           }
 
           # Wait for Tailscale IPv4 address
@@ -205,20 +271,20 @@ jobs:
           $retries = 0
 
           while (-not $tsIP -and $retries -lt 20) {
-              $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1).Trim()
+            $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1).Trim()
 
-              if ($tsIP) {
-                  break
-              }
+            if ($tsIP) {
+              break
+            }
 
-              Write-Host "Waiting for Tailscale IP..."
-              Start-Sleep -Seconds 5
-              $retries++
+            Write-Host "Waiting for Tailscale IP..."
+            Start-Sleep -Seconds 5
+            $retries++
           }
 
           if (-not $tsIP) {
-              Write-Error "Tailscale IP was not assigned."
-              exit 1
+            Write-Error "Tailscale IP was not assigned."
+            exit 1
           }
 
           "TAILSCALE_IP=$tsIP" |
@@ -240,8 +306,8 @@ jobs:
             -WarningAction SilentlyContinue
 
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed."
-              exit 1
+            Write-Error "TCP connection to RDP port 3389 failed."
+            exit 1
           }
 
           Write-Host "RDP TCP connectivity successful!"
@@ -250,9 +316,9 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "              RDP ACCESS"
+          Write-Host " RDP ACCESS"
           Write-Host "=========================================="
-          Write-Host "Address:  $env:TAILSCALE_IP"
+          Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $($env:RDP_CREDS)"
           Write-Host "=========================================="
@@ -261,8 +327,47 @@ jobs:
           Write-Host "=========================================="
 
       - name: Maintain Connection
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Runner is alive"
-              Start-Sleep -Seconds 300
+          $deadline = [long]$env:DEADLINE
+          $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+          # Start the next runner at ~5h10m, then stay alive ~25 more minutes
+          $handoverAt = $now + (310 * 60)
+          $endAt = $now + (335 * 60)
+
+          # Phase 1: keep the session alive
+          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $handoverAt) -and
+                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
+            Write-Host "[$(Get-Date)] RDP Active - Runner is alive"
+            Start-Sleep -Seconds 300
+          }
+
+          $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+          if ($now -ge ($deadline - 600)) {
+            Write-Host "24h deadline reached. Not starting a new runner."
+            exit 0
+          }
+
+          # Phase 2: start the next runner
+          Write-Host "Starting next runner..."
+
+          gh workflow run mika.yml `
+            --repo ${{ github.repository }} `
+            --ref ${{ github.ref_name }} `
+            -f deadline=$deadline
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to start next runner."
+          } else {
+            Write-Host "Next runner started. Check the Actions tab for the new IP and password."
+          }
+
+          # Phase 3: overlap so you have time to switch over
+          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $endAt) -and
+                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
+            Write-Host "[$(Get-Date)] Handover - this runner is about to end"
+            Start-Sleep -Seconds 60
           }
