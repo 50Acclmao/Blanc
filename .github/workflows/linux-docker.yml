@@ -1,4 +1,4 @@
-name: RDP-Linux-1
+name: RDP-Linux-Docker-1
 
 on:
   workflow_dispatch:
@@ -33,22 +33,7 @@ jobs:
           echo "DEADLINE=$DEADLINE" >> "$GITHUB_ENV"
           echo "Session deadline: $(date -u -d @$DEADLINE)"
 
-      - name: Install Desktop + xrdp
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xfce4 xfce4-terminal xfce4-goodies xrdp dbus-x11
-
-          echo "xfce4-session" > ~/.xsession
-
-          sudo bash -c 'printf "#!/bin/sh\nexec /bin/dbus-launch --exit-with-session xfce4-session\n" > /etc/xrdp/startwm.sh'
-          sudo chmod +x /etc/xrdp/startwm.sh
-
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-
-          echo "Desktop and xrdp installed."
-
-      - name: Create RDP User with Secure Password
+      - name: Set RDP Password
         run: |
           PASSWORD="${{ github.event.inputs.password }}"
 
@@ -60,22 +45,56 @@ jobs:
             PASSWORD=$(echo "$UPPER$LOWER$NUM$SPECIAL" | fold -w1 | shuf | tr -d '\n')
           fi
 
-          sudo useradd -m -s /bin/bash RDP
-          echo "RDP:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo RDP
+          echo "RDP_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
 
-          echo "RDP_CREDS=User: RDP | Password: $PASSWORD" >> "$GITHUB_ENV"
-
-          echo "RDP user created."
-
-      - name: Install Visual Studio Code
+      - name: Write Dockerfile
         run: |
-          wget -q https://go.microsoft.com/fwlink/?LinkID=760868 -O /tmp/vscode.deb
-          sudo apt-get install -y /tmp/vscode.deb
-          rm -f /tmp/vscode.deb
+          mkdir -p rdp-docker
+          cd rdp-docker
 
-          which code || { echo "VS Code install failed"; exit 1; }
-          echo "VS Code installed."
+          {
+            echo 'FROM debian:bookworm'
+            echo ''
+            echo 'RUN apt update && \'
+            echo '    DEBIAN_FRONTEND=noninteractive apt install -y \'
+            echo '    xrdp xfce4 xfce4-terminal xfce4-goodies dbus-x11 \'
+            echo '    sudo wget curl git firefox-esr fonts-wqy-zenhei gpg && \'
+            echo '    rm -rf /var/lib/apt/lists/*'
+            echo ''
+            echo 'RUN wget -q https://go.microsoft.com/fwlink/?LinkID=760868 -O /tmp/vscode.deb && \'
+            echo '    apt install -y /tmp/vscode.deb && rm -f /tmp/vscode.deb'
+            echo ''
+            echo 'RUN useradd -m -s /bin/bash RDP && \'
+            echo '    adduser RDP sudo && \'
+            echo '    adduser xrdp ssl-cert'
+            echo ''
+            echo 'RUN echo "xfce4-session" > /home/RDP/.xsession && \'
+            echo '    chown RDP:RDP /home/RDP/.xsession'
+            echo ''
+            echo 'RUN printf "#!/bin/sh\nexec /bin/dbus-launch --exit-with-session xfce4-session\n" > /etc/xrdp/startwm.sh && \'
+            echo '    chmod +x /etc/xrdp/startwm.sh'
+            echo ''
+            echo 'EXPOSE 3389'
+            echo 'CMD service xrdp start && tail -f /var/log/xrdp.log'
+          } > Dockerfile
+
+          cat Dockerfile
+
+      - name: Build Image
+        run: docker build -t rdp-linux ./rdp-docker
+
+      - name: Run Container
+        run: |
+          docker run -d \
+            -p 3389:3389 \
+            -v rdp-home:/home/RDP \
+            --name rdp-linux \
+            rdp-linux
+
+          echo "RDP:$RDP_PASSWORD" | docker exec -i rdp-linux chpasswd
+
+          sleep 3
+          docker ps
 
       - name: Install Tailscale
         run: |
@@ -86,7 +105,7 @@ jobs:
         run: |
           sudo tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=gh-runner-linux-$GITHUB_RUN_ID
+            --hostname=gh-runner-docker-$GITHUB_RUN_ID
 
           TS_IP=""
           for i in $(seq 1 20); do
@@ -121,7 +140,7 @@ jobs:
           echo "=========================================="
           echo "Address: $TAILSCALE_IP"
           echo "Username: RDP"
-          echo "Password: $RDP_CREDS"
+          echo "Password: $RDP_PASSWORD"
           echo "=========================================="
           echo ""
           echo "Visual Studio Code is installed."
@@ -135,7 +154,6 @@ jobs:
           HANDOVER_AT=$(( NOW + 310*60 ))
           END_AT=$(( NOW + 335*60 ))
 
-          # Phase 1: keep the session alive
           while [ "$(date +%s)" -lt "$HANDOVER_AT" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
             echo "[$(date)] RDP Active - Runner is alive"
             sleep 300
@@ -148,16 +166,14 @@ jobs:
             exit 0
           fi
 
-          # Phase 2: start the next runner
           echo "Starting next runner..."
 
-          gh workflow run mika-linux.yml \
+          gh workflow run mika-linux-docker.yml \
             --repo ${{ github.repository }} \
             --ref ${{ github.ref_name }} \
             -f deadline=$DEADLINE \
-            -f password="${{ github.event.inputs.password }}" || echo "Failed to start next runner."
+            -f password="$RDP_PASSWORD" || echo "Failed to start next runner."
 
-          # Phase 3: overlap so you have time to switch over
           while [ "$(date +%s)" -lt "$END_AT" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
             echo "[$(date)] Handover - this runner is about to end"
             sleep 60
