@@ -1,224 +1,151 @@
-name: Linux RDP
+name: RDP-Linux-1
 
 on:
   workflow_dispatch:
+    inputs:
+      deadline:
+        description: "Leave empty. Used by auto-restart to keep the 24h deadline"
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
-  linux-rdp:
+  secure-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Install XFCE and XRDP
+      - name: Set 24h Deadline
         run: |
-          sudo apt update
+          DEADLINE="${{ github.event.inputs.deadline }}"
 
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-            xfce4 \
-            xfce4-goodies \
-            xfce4-session \
-            xrdp \
-            xorgxrdp \
-            dbus-x11 \
-            policykit-1
+          if [ -z "$DEADLINE" ]; then
+            DEADLINE=$(( $(date +%s) + 86400 ))
+          fi
 
-          # XRDP needs access to its certificate
-          sudo adduser xrdp ssl-cert || true
+          echo "DEADLINE=$DEADLINE" >> "$GITHUB_ENV"
+          echo "Session deadline: $(date -u -d @$DEADLINE)"
 
-          # Configure XRDP security/session settings
-          sudo sed -i 's/^security_layer=.*/security_layer=negotiate/' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/^crypt_level=.*/crypt_level=high/' /etc/xrdp/xrdp.ini
+      - name: Install Desktop + xrdp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
 
-          # Configure XRDP to launch XFCE
-          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
-          #!/bin/sh
-
-          unset DBUS_SESSION_BUS_ADDRESS
-          unset XDG_RUNTIME_DIR
-
-          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
-          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-
-          exec dbus-run-session -- startxfce4
-          EOF
-
-          sudo chmod +x /etc/xrdp/startwm.sh
-
-          # Configure the RDP port
-          sudo sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini
-
-          # Enable XRDP
+          echo "xfce4-session" > ~/.xsession
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
-          sudo systemctl restart xrdp-sesman
 
-          sleep 5
+          echo "Desktop and xrdp installed."
 
-          echo "=== XRDP STATUS ==="
-          sudo systemctl status xrdp --no-pager || true
-
-          echo "=== XRDP SESMAN ==="
-          sudo systemctl status xrdp-sesman --no-pager || true
-
-          echo "=== PORT ==="
-          sudo ss -lntp | grep 3389 || true
-
-      - name: Create RDP User
+      - name: Create RDP User with Secure Password
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y wamerican
+          UPPER=$(tr -dc 'A-Z' < /dev/urandom | head -c4)
+          LOWER=$(tr -dc 'a-z' < /dev/urandom | head -c4)
+          NUM=$(tr -dc '0-9' < /dev/urandom | head -c4)
+          SPECIAL=$(tr -dc '!@#$%^&*' < /dev/urandom | head -c4)
+          PASSWORD=$(echo "$UPPER$LOWER$NUM$SPECIAL" | fold -w1 | shuf | tr -d '\n')
 
-          # Generate an easy-to-type password: 2 random words + a number
-          PASSWORD=$(shuf -n 2 /usr/share/dict/words | tr -d "'" | tr '\n' '-' | sed 's/-$//')
-          PASSWORD="$PASSWORD-$((RANDOM % 900 + 100))"
-
-          # Create user
           sudo useradd -m -s /bin/bash RDP
-
-          # Set password
           echo "RDP:$PASSWORD" | sudo chpasswd
-
-          # Give sudo access
           sudo usermod -aG sudo RDP
 
-          # Configure XFCE (matches /etc/xrdp/startwm.sh exactly,
-          # since xrdp prefers ~/.xsession over startwm.sh when it exists)
-          sudo tee /home/RDP/.xsession > /dev/null <<'EOF'
-          #!/bin/sh
-
-          unset DBUS_SESSION_BUS_ADDRESS
-          unset XDG_RUNTIME_DIR
-
-          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
-          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
-
-          exec dbus-run-session -- startxfce4
-          EOF
-
-          sudo chown RDP:RDP /home/RDP/.xsession
-          sudo chmod +x /home/RDP/.xsession
-
-          # Correct home permissions
-          sudo chown -R RDP:RDP /home/RDP
-
-          echo "RDP_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          echo "RDP_CREDS=User: RDP | Password: $PASSWORD" >> "$GITHUB_ENV"
 
           echo "RDP user created."
+
+      - name: Install Visual Studio Code
+        run: |
+          wget -q https://go.microsoft.com/fwlink/?LinkID=760868 -O /tmp/vscode.deb
+          sudo apt-get install -y /tmp/vscode.deb
+          rm -f /tmp/vscode.deb
+
+          which code || { echo "VS Code install failed"; exit 1; }
+          echo "VS Code installed."
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
+          echo "Tailscale installed."
 
-          if ! command -v tailscale >/dev/null 2>&1; then
-            echo "Tailscale installation failed."
-            exit 1
-          fi
-
-          echo "Tailscale installed successfully."
-
-      - name: Connect Tailscale
+      - name: Establish Tailscale Connection
         run: |
           sudo tailscale up \
-            --auth-key=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=gh-linux-rdp-$GITHUB_RUN_ID
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-linux-$GITHUB_RUN_ID
 
-          TSIP=""
-
-          for i in {1..20}; do
-            TSIP=$(sudo tailscale ip -4 2>/dev/null | head -n1)
-
-            if [ -n "$TSIP" ]; then
-              break
-            fi
-
+          TS_IP=""
+          for i in $(seq 1 20); do
+            TS_IP=$(tailscale ip -4 2>/dev/null | head -n1)
+            [ -n "$TS_IP" ] && break
             echo "Waiting for Tailscale IP..."
-            sleep 3
+            sleep 5
           done
 
-          if [ -z "$TSIP" ]; then
+          if [ -z "$TS_IP" ]; then
             echo "Tailscale IP was not assigned."
             exit 1
           fi
 
-          echo "TAILSCALE_IP=$TSIP" >> "$GITHUB_ENV"
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+          echo "Tailscale IP: $TS_IP"
 
-          echo "Tailscale IP: $TSIP"
-
-      - name: Configure Firewall
+      - name: Verify RDP Accessibility
         run: |
-          sudo ufw allow 3389/tcp 2>/dev/null || true
-
-          sudo systemctl restart xrdp
-          sudo systemctl restart xrdp-sesman
-
-          sleep 3
-
-          echo "=== XRDP ACTIVE ==="
-          sudo systemctl is-active xrdp
-
-          echo "=== PORT 3389 ==="
-          sudo ss -lntp | grep 3389 || true
-
-      - name: Verify RDP
-        run: |
-          echo "Testing RDP port..."
-
-          if timeout 5 bash -c '</dev/tcp/127.0.0.1/3389' 2>/dev/null; then
-            echo "RDP port 3389 is OPEN."
-          else
-            echo "RDP port 3389 is NOT accessible."
-
-            sudo systemctl status xrdp --no-pager || true
-            sudo systemctl status xrdp-sesman --no-pager || true
-            sudo ss -lntp | grep 3389 || true
-
+          sudo apt-get install -y netcat-openbsd
+          if ! nc -z -w5 "$TAILSCALE_IP" 3389; then
+            echo "TCP connection to RDP port 3389 failed."
             exit 1
           fi
+          echo "RDP TCP connectivity successful!"
 
-      - name: Show RDP Information
+      - name: Show Access Information
         run: |
           echo ""
           echo "=========================================="
-          echo "             LINUX RDP ACCESS"
+          echo " RDP ACCESS"
           echo "=========================================="
-          echo "Address:  $TAILSCALE_IP"
-          echo "Port:     3389"
+          echo "Address: $TAILSCALE_IP"
           echo "Username: RDP"
-          echo "Password: $RDP_PASSWORD"
-          echo "Desktop:  XFCE"
-          echo "Security: RDP"
+          echo "Password: $RDP_CREDS"
           echo "=========================================="
           echo ""
-          echo "Connect to:"
-          echo "$TAILSCALE_IP:3389"
-          echo ""
+          echo "Visual Studio Code is installed."
           echo "=========================================="
 
       - name: Maintain Connection
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          while true; do
-            echo "[$(date)] Linux RDP active"
+          NOW=$(date +%s)
+          HANDOVER_AT=$(( NOW + 310*60 ))
+          END_AT=$(( NOW + 335*60 ))
+
+          # Phase 1: keep the session alive
+          while [ "$(date +%s)" -lt "$HANDOVER_AT" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            echo "[$(date)] RDP Active - Runner is alive"
             sleep 300
           done
 
-      - name: Show Session Log
-        if: always()
-        run: |
-          cat /var/log/xrdp-sesman.log 2>/dev/null || true
-          cat /home/RDP/.xorgxrdp.log 2>/dev/null || true
-          cat /home/RDP/.xsession-errors 2>/dev/null || true
+          NOW=$(date +%s)
 
-      - name: Show XRDP Logs
-        if: always()
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "              XRDP DEBUG LOGS"
-          echo "=========================================="
+          if [ "$NOW" -ge "$(( DEADLINE - 600 ))" ]; then
+            echo "24h deadline reached. Not starting a new runner."
+            exit 0
+          fi
 
-          echo ""
-          echo "=== XRDP SERVICE ==="
-          sudo systemctl status xrdp --no-pager || true
+          # Phase 2: start the next runner
+          echo "Starting next runner..."
 
-          echo ""
-          echo "=== XRDP SESMAN ==="
-          sudo systemctl status xrdp-sesman --no-pager || true
+          gh workflow run mika-linux.yml \
+            --repo ${{ github.repository }} \
+            --ref ${{ github.ref_name }} \
+            -f deadline=$DEADLINE || echo "Failed to start next runner."
+
+          # Phase 3: overlap so you have time to switch over
+          while [ "$(date +%s)" -lt "$END_AT" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            echo "[$(date)] Handover - this runner is about to end"
+            sleep 60
+          done
