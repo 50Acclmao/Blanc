@@ -32,9 +32,16 @@ jobs:
       - name: Install Desktop + xrdp
         run: |
           sudo apt-get update
-          sudo apt-get install -y xfce4 xfce4-goodies xrdp dbus-x11
+          sudo apt-get install -y xfce4 xfce4-terminal xfce4-goodies xrdp dbus-x11
 
           echo "xfce4-session" > ~/.xsession
+
+          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
+          #!/bin/sh
+          exec /bin/dbus-launch --exit-with-session xfce4-session
+          EOF
+          sudo chmod +x /etc/xrdp/startwm.sh
+
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
