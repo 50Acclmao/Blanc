@@ -74,6 +74,10 @@ jobs:
             echo 'RUN printf "#!/bin/sh\nexec /bin/dbus-launch --exit-with-session xfce4-session\n" > /etc/xrdp/startwm.sh && \'
             echo '    chmod +x /etc/xrdp/startwm.sh'
             echo ''
+            echo 'RUN sed -i "s/^max_bpp=.*/max_bpp=32/" /etc/xrdp/xrdp.ini && \'
+            echo '    sed -i "s/^bitmap_compression=.*/bitmap_compression=false/" /etc/xrdp/xrdp.ini && \'
+            echo '    sed -i "s/^crypt_level=.*/crypt_level=low/" /etc/xrdp/xrdp.ini'
+            echo ''
             echo 'EXPOSE 3389'
             echo 'CMD service xrdp start && tail -f /var/log/xrdp.log'
           } > Dockerfile
