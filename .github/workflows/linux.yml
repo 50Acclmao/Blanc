@@ -3,6 +3,10 @@ name: RDP-Linux-1
 on:
   workflow_dispatch:
     inputs:
+      password:
+        description: "RDP password (leave empty for a random one)"
+        required: false
+        default: ""
       deadline:
         description: "Leave empty. Used by auto-restart to keep the 24h deadline"
         required: false
@@ -46,11 +50,15 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          UPPER=$(tr -dc 'A-Z' < /dev/urandom 2>/dev/null | head -c4)
-          LOWER=$(tr -dc 'a-z' < /dev/urandom 2>/dev/null | head -c4)
-          NUM=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c4)
-          SPECIAL=$(tr -dc '!@#$%^&*' < /dev/urandom 2>/dev/null | head -c4)
-          PASSWORD=$(echo "$UPPER$LOWER$NUM$SPECIAL" | fold -w1 | shuf | tr -d '\n')
+          PASSWORD="${{ github.event.inputs.password }}"
+
+          if [ -z "$PASSWORD" ]; then
+            UPPER=$(tr -dc 'A-Z' < /dev/urandom 2>/dev/null | head -c4)
+            LOWER=$(tr -dc 'a-z' < /dev/urandom 2>/dev/null | head -c4)
+            NUM=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c4)
+            SPECIAL=$(tr -dc '!@#$%^&*' < /dev/urandom 2>/dev/null | head -c4)
+            PASSWORD=$(echo "$UPPER$LOWER$NUM$SPECIAL" | fold -w1 | shuf | tr -d '\n')
+          fi
 
           sudo useradd -m -s /bin/bash RDP
           echo "RDP:$PASSWORD" | sudo chpasswd
@@ -146,7 +154,8 @@ jobs:
           gh workflow run mika-linux.yml \
             --repo ${{ github.repository }} \
             --ref ${{ github.ref_name }} \
-            -f deadline=$DEADLINE || echo "Failed to start next runner."
+            -f deadline=$DEADLINE \
+            -f password="${{ github.event.inputs.password }}" || echo "Failed to start next runner."
 
           # Phase 3: overlap so you have time to switch over
           while [ "$(date +%s)" -lt "$END_AT" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
