@@ -36,10 +36,7 @@ jobs:
 
           echo "xfce4-session" > ~/.xsession
 
-          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
-          #!/bin/sh
-          exec /bin/dbus-launch --exit-with-session xfce4-session
-          EOF
+          sudo bash -c 'printf "#!/bin/sh\nexec /bin/dbus-launch --exit-with-session xfce4-session\n" > /etc/xrdp/startwm.sh'
           sudo chmod +x /etc/xrdp/startwm.sh
 
           sudo systemctl enable xrdp
