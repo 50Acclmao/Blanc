@@ -42,10 +42,10 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          UPPER=$(tr -dc 'A-Z' < /dev/urandom | head -c4)
-          LOWER=$(tr -dc 'a-z' < /dev/urandom | head -c4)
-          NUM=$(tr -dc '0-9' < /dev/urandom | head -c4)
-          SPECIAL=$(tr -dc '!@#$%^&*' < /dev/urandom | head -c4)
+          UPPER=$(tr -dc 'A-Z' < /dev/urandom 2>/dev/null | head -c4)
+          LOWER=$(tr -dc 'a-z' < /dev/urandom 2>/dev/null | head -c4)
+          NUM=$(tr -dc '0-9' < /dev/urandom 2>/dev/null | head -c4)
+          SPECIAL=$(tr -dc '!@#$%^&*' < /dev/urandom 2>/dev/null | head -c4)
           PASSWORD=$(echo "$UPPER$LOWER$NUM$SPECIAL" | fold -w1 | shuf | tr -d '\n')
 
           sudo useradd -m -s /bin/bash RDP
