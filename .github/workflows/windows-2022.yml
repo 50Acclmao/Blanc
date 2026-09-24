@@ -1,14 +1,40 @@
-name: RDP-2022
+name: RDP-2000
 
 on:
   workflow_dispatch:
+    inputs:
+      deadline:
+        description: "Leave empty. Used by auto-restart to keep the 24h deadline"
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   secure-rdp:
     runs-on: windows-2022
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
+      - name: Set 24h Deadline
+        run: |
+          $deadline = "${{ github.event.inputs.deadline }}"
+
+          if ([string]::IsNullOrWhiteSpace($deadline)) {
+            $deadline = [DateTimeOffset]::UtcNow.AddHours(24).ToUnixTimeSeconds()
+          }
+
+          "DEADLINE=$deadline" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          $endTime = [DateTimeOffset]::FromUnixTimeSeconds([long]$deadline).UtcDateTime
+          Write-Host "Session deadline: $endTime UTC"
+
       - name: Configure Core RDP Settings
         run: |
           # Enable Remote Desktop
@@ -70,7 +96,7 @@ jobs:
             $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
             if (-not (Test-Path $ts)) { New-Item -Path $ts -Force | Out-Null }
             Set-ItemProperty -Path $ts -Name "fNoRemoteDesktopWallpaper" -Value 1 -Type DWord -Force
-            Set-ItemProperty -Path $ts -Name "ColorDepth" -Value 3 -Type DWord -Force
+            Set-ItemProperty -Path $ts -Name "ColorDepth" -Value 4 -Type DWord -Force
           } catch {}
 
           # Best performance visual settings for new users (applies to the RDP user)
@@ -85,6 +111,16 @@ jobs:
             [gc]::Collect()
             Start-Sleep -Seconds 2
             reg unload HKU\DefUser
+          } catch {}
+
+          # Same tweaks applied directly to the current admin account (HKCU)
+          try {
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f
+            reg add "HKCU\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
+            reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
+            reg add "HKCU\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d 0 /f
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations /t REG_DWORD /d 0 /f
           } catch {}
 
           Write-Host "Windows lightened."
@@ -158,7 +194,7 @@ jobs:
         run: |
           Write-Host "Installing Visual Studio Code..."
 
-          $url = "https://update.code.visualstudio.com/latest/win32-x64-user/stable"
+          $url = "https://update.code.visualstudio.com/latest/win32-x64/stable"
           $installer = "$env:TEMP\vscode.exe"
 
           Invoke-WebRequest `
@@ -172,15 +208,15 @@ jobs:
 
           Start-Process `
             -FilePath $installer `
-            -ArgumentList "/VERYSILENT", "/NORESTART", "/MERGETASKS=!runcode" `
+            -ArgumentList "/VERYSILENT", "/NORESTART", "/MERGETASKS=!runcode,desktopicon,addtopath" `
             -Wait
 
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
           # Check common installation paths
           $vscodePaths = @(
-            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
-            "$env:ProgramFiles\Microsoft VS Code\Code.exe"
+            "$env:ProgramFiles\Microsoft VS Code\Code.exe",
+            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
           )
 
           $installed = $false
@@ -199,6 +235,43 @@ jobs:
           }
 
           Write-Host "Visual Studio Code installed successfully."
+
+      - name: Install Mesa3D (Software GPU - llvmpipe)
+        run: |
+          Write-Host "Installing Mesa3D llvmpipe (software OpenGL)..."
+
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*release-msvc.7z" } | Select-Object -First 1
+
+          if (-not $asset) {
+            Write-Error "Could not find Mesa3D release asset."
+            exit 1
+          }
+
+          $archive = "$env:TEMP\mesa3d.7z"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive
+
+          $extractPath = "$env:TEMP\mesa3d"
+          & "C:\Program Files\7-Zip\7z.exe" x $archive -o"$extractPath" -y | Out-Null
+
+          # Back up the real opengl32.dll, then drop in the llvmpipe software one
+          $sys32 = "$env:WINDIR\System32\opengl32.dll"
+          if (-not (Test-Path "$sys32.bak")) {
+            Copy-Item $sys32 "$sys32.bak" -Force -ErrorAction SilentlyContinue
+          }
+
+          $llvmpipeDll = Get-ChildItem -Path $extractPath -Recurse -Filter "opengl32.dll" |
+            Where-Object { $_.FullName -like "*x64*" } |
+            Select-Object -First 1
+
+          if (-not $llvmpipeDll) {
+            Write-Error "opengl32.dll not found in Mesa3D archive."
+            exit 1
+          }
+
+          Copy-Item $llvmpipeDll.FullName $sys32 -Force
+
+          Write-Host "Mesa3D llvmpipe installed. Apps needing OpenGL now render in software."
 
       - name: Install Tailscale
         run: |
@@ -301,8 +374,47 @@ jobs:
           Write-Host "=========================================="
 
       - name: Maintain Connection
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          while ($true) {
+          $deadline = [long]$env:DEADLINE
+          $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+          # Start the next runner at ~5h10m, then stay alive ~25 more minutes
+          $handoverAt = $now + (310 * 60)
+          $endAt = $now + (335 * 60)
+
+          # Phase 1: keep the session alive
+          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $handoverAt) -and
+                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
             Write-Host "[$(Get-Date)] RDP Active - Runner is alive"
             Start-Sleep -Seconds 300
+          }
+
+          $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+          if ($now -ge ($deadline - 600)) {
+            Write-Host "24h deadline reached. Not starting a new runner."
+            exit 0
+          }
+
+          # Phase 2: start the next runner
+          Write-Host "Starting next runner..."
+
+          gh workflow run mika.yml `
+            --repo ${{ github.repository }} `
+            --ref ${{ github.ref_name }} `
+            -f deadline=$deadline
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to start next runner."
+          } else {
+            Write-Host "Next runner started. Check the Actions tab for the new IP and password."
+          }
+
+          # Phase 3: overlap so you have time to switch over
+          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $endAt) -and
+                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
+            Write-Host "[$(Get-Date)] Handover - this runner is about to end"
+            Start-Sleep -Seconds 60
           }
