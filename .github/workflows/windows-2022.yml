@@ -38,31 +38,26 @@ jobs:
 
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" `
             -Value 0 `
             -Force
 
-          # Disable Network Level Authentication
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "UserAuthentication" `
             -Value 0 `
             -Force
 
-          # Set RDP security layer
           Set-ItemProperty `
             -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "SecurityLayer" `
             -Value 0 `
             -Force
 
-          # Remove old firewall rule if it exists
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
 
-          # Allow RDP on port 3389
           netsh advfirewall firewall add rule `
             name="RDP-Tailscale" `
             dir=in `
@@ -70,58 +65,157 @@ jobs:
             protocol=TCP `
             localport=3389
 
-          # Restart Remote Desktop service
           Restart-Service -Name TermService -Force
 
           Write-Host "RDP configured successfully."
 
       - name: Lighten Windows
         run: |
-          # High performance power plan
           try { powercfg /setactive SCHEME_MIN } catch {}
 
-          # Turn off Defender real-time scanning
-          try { Set-MpPreference -DisableRealtimeMonitoring $true } catch {}
+          try {
+            Set-MpPreference -DisableRealtimeMonitoring $true
+          } catch {}
 
-          # Stop heavy background services, but leave them startable on demand (Manual)
-          $services = @("WSearch", "wuauserv", "UsoSvc", "SysMain", "DiagTrack", "DoSvc", "MapsBroker")
+          $services = @(
+            "WSearch",
+            "wuauserv",
+            "UsoSvc",
+            "SysMain",
+            "DiagTrack",
+            "DoSvc",
+            "MapsBroker"
+          )
+
           foreach ($svc in $services) {
             try {
-              Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-              Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue
+              Stop-Service `
+                -Name $svc `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              Set-Service `
+                -Name $svc `
+                -StartupType Manual `
+                -ErrorAction SilentlyContinue
             } catch {}
           }
 
-          # RDP side: no wallpaper, 16-bit color
           try {
             $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-            if (-not (Test-Path $ts)) { New-Item -Path $ts -Force | Out-Null }
-            Set-ItemProperty -Path $ts -Name "fNoRemoteDesktopWallpaper" -Value 1 -Type DWord -Force
-            Set-ItemProperty -Path $ts -Name "ColorDepth" -Value 4 -Type DWord -Force
+
+            if (-not (Test-Path $ts)) {
+              New-Item -Path $ts -Force | Out-Null
+            }
+
+            Set-ItemProperty `
+              -Path $ts `
+              -Name "fNoRemoteDesktopWallpaper" `
+              -Value 1 `
+              -Type DWord `
+              -Force
+
+            Set-ItemProperty `
+              -Path $ts `
+              -Name "ColorDepth" `
+              -Value 4 `
+              -Type DWord `
+              -Force
           } catch {}
 
-          # Best performance visual settings for new users (applies to the RDP user)
           try {
             reg load HKU\DefUser C:\Users\Default\NTUSER.DAT
-            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f
-            reg add "HKU\DefUser\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
-            reg add "HKU\DefUser\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
-            reg add "HKU\DefUser\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d 0 /f
-            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f
-            reg add "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations /t REG_DWORD /d 0 /f
+
+            reg add `
+              "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" `
+              /v VisualFXSetting `
+              /t REG_DWORD `
+              /d 2 `
+              /f
+
+            reg add `
+              "HKU\DefUser\Control Panel\Desktop" `
+              /v UserPreferencesMask `
+              /t REG_BINARY `
+              /d 9012038010000000 `
+              /f
+
+            reg add `
+              "HKU\DefUser\Control Panel\Desktop" `
+              /v DragFullWindows `
+              /t REG_SZ `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKU\DefUser\Control Panel\Desktop\WindowMetrics" `
+              /v MinAnimate `
+              /t REG_SZ `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" `
+              /v EnableTransparency `
+              /t REG_DWORD `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKU\DefUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" `
+              /v TaskbarAnimations `
+              /t REG_DWORD `
+              /d 0 `
+              /f
+
             [gc]::Collect()
             Start-Sleep -Seconds 2
+
             reg unload HKU\DefUser
           } catch {}
 
-          # Same tweaks applied directly to the current admin account (HKCU)
           try {
-            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f
-            reg add "HKCU\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9012038010000000 /f
-            reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f
-            reg add "HKCU\Control Panel\Desktop\WindowMetrics" /v MinAnimate /t REG_SZ /d 0 /f
-            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 0 /f
-            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations /t REG_DWORD /d 0 /f
+            reg add `
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" `
+              /v VisualFXSetting `
+              /t REG_DWORD `
+              /d 2 `
+              /f
+
+            reg add `
+              "HKCU\Control Panel\Desktop" `
+              /v UserPreferencesMask `
+              /t REG_BINARY `
+              /d 9012038010000000 `
+              /f
+
+            reg add `
+              "HKCU\Control Panel\Desktop" `
+              /v DragFullWindows `
+              /t REG_SZ `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKCU\Control Panel\Desktop\WindowMetrics" `
+              /v MinAnimate `
+              /t REG_SZ `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" `
+              /v EnableTransparency `
+              /t REG_DWORD `
+              /d 0 `
+              /f
+
+            reg add `
+              "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" `
+              /v TaskbarAnimations `
+              /t REG_DWORD `
+              /d 0 `
+              /f
           } catch {}
 
           Write-Host "Windows lightened."
@@ -138,8 +232,15 @@ jobs:
             "\Microsoft\Windows\TaskScheduler\Maintenance Configurator",
             "\Microsoft\Windows\Maintenance\WinSAT"
           )
+
           foreach ($t in $tasks) {
-            try { Disable-ScheduledTask -TaskName ($t.Split('\')[-1]) -TaskPath ($t.Substring(0, $t.LastIndexOf('\') + 1)) -ErrorAction SilentlyContinue | Out-Null } catch {}
+            try {
+              Disable-ScheduledTask `
+                -TaskName ($t.Split('\')[-1]) `
+                -TaskPath ($t.Substring(0, $t.LastIndexOf('\') + 1)) `
+                -ErrorAction SilentlyContinue |
+                Out-Null
+            } catch {}
           }
 
           Write-Host "Recurring maintenance tasks disabled."
@@ -148,34 +249,97 @@ jobs:
         run: |
           Write-Host "Removing bloatware..."
 
-          # Kill and disable OneDrive
+          # OneDrive
           try {
-            Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
-            Start-Process "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" -ArgumentList "/uninstall" -Wait -ErrorAction SilentlyContinue
-          } catch {}
+            Stop-Process `
+              -Name OneDrive `
+              -Force `
+              -ErrorAction SilentlyContinue
 
-          # Remove default UWP apps nobody needs on a headless dev box
+            $oneDriveSetup = "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
+
+            if (Test-Path $oneDriveSetup) {
+              Start-Process `
+                -FilePath $oneDriveSetup `
+                -ArgumentList "/uninstall" `
+                -Wait `
+                -ErrorAction SilentlyContinue
+            }
+          } catch {
+            Write-Host "OneDrive removal skipped: $($_.Exception.Message)"
+          }
+
+          # UWP/AppX packages
           $apps = @(
-            "*Xbox*", "*Teams*", "*Skype*", "*ZuneMusic*", "*ZuneVideo*",
-            "*BingWeather*", "*BingNews*", "*GetHelp*", "*Getstarted*",
-            "*Messaging*", "*Office.OneNote*", "*People*", "*SolitaireCollection*",
-            "*WindowsMaps*", "*WindowsFeedbackHub*", "*YourPhone*", "*MixedReality*"
+            "*Xbox*",
+            "*Teams*",
+            "*Skype*",
+            "*ZuneMusic*",
+            "*ZuneVideo*",
+            "*BingWeather*",
+            "*BingNews*",
+            "*GetHelp*",
+            "*Getstarted*",
+            "*Messaging*",
+            "*Office.OneNote*",
+            "*People*",
+            "*SolitaireCollection*",
+            "*WindowsMaps*",
+            "*WindowsFeedbackHub*",
+            "*YourPhone*",
+            "*MixedReality*"
           )
-          foreach ($app in $apps) {
-            Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue |
-              Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+
+          try {
+            Import-Module Appx -ErrorAction Stop
+
+            Write-Host "Appx module loaded."
+
+            foreach ($app in $apps) {
+              try {
+                $packages = Get-AppxPackage `
+                  -Name $app `
+                  -AllUsers `
+                  -ErrorAction SilentlyContinue
+
+                foreach ($package in $packages) {
+                  Write-Host "Removing: $($package.Name)"
+
+                  Remove-AppxPackage `
+                    -Package $package.PackageFullName `
+                    -AllUsers `
+                    -ErrorAction SilentlyContinue
+                }
+              } catch {
+                Write-Host "Skipped $app"
+              }
+            }
+          }
+          catch {
+            Write-Host "Appx is unavailable on this GitHub runner."
+            Write-Host "Skipping UWP bloatware removal."
           }
 
-          # Free disk space: strip unused pre-installed dev toolcaches from the runner image
+          # Clean hosted tool cache
           $toolcache = "C:\hostedtoolcache\windows"
+
           if (Test-Path $toolcache) {
-            $keep = @("node")  # keep only what this workflow might use; add more names to spare them
-            Get-ChildItem $toolcache -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $keep -notcontains $_.Name } |
-              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            $keep = @("node")
+
+            Get-ChildItem `
+              $toolcache `
+              -Directory `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $keep -notcontains $_.Name
+              } |
+              Remove-Item `
+                -Recurse `
+                -Force `
+                -ErrorAction SilentlyContinue
           }
 
-          Write-Host "Bloatware removed."
+          Write-Host "Bloatware cleanup completed."
 
       - name: Create RDP User with Secure Password
         run: |
@@ -199,26 +363,26 @@ jobs:
           $rawPassword += $charSet.Number | Get-Random -Count 4
           $rawPassword += $charSet.Special | Get-Random -Count 4
 
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $password = -join (
+            $rawPassword |
+            Sort-Object { Get-Random }
+          )
 
           $securePass = ConvertTo-SecureString `
             $password `
             -AsPlainText `
             -Force
 
-          # Remove existing user if present
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
             Remove-LocalUser -Name "RDP"
           }
 
-          # Create RDP account
           New-LocalUser `
             -Name "RDP" `
             -Password $securePass `
             -AccountNeverExpires `
             -PasswordNeverExpires
 
-          # Add required groups
           Add-LocalGroupMember `
             -Group "Administrators" `
             -Member "RDP"
@@ -227,14 +391,12 @@ jobs:
             -Group "Remote Desktop Users" `
             -Member "RDP"
 
-          # Store credentials in environment
           "RDP_CREDS=User: RDP | Password: $password" |
             Out-File `
               -FilePath $env:GITHUB_ENV `
               -Append `
               -Encoding utf8
 
-          # Verify user creation
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
             Write-Error "User creation failed"
             exit 1
@@ -246,8 +408,12 @@ jobs:
         run: |
           Write-Host "Installing Mesa3D llvmpipe (software OpenGL)..."
 
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest"
-          $asset = $release.assets | Where-Object { $_.name -like "*release-msvc.7z" } | Select-Object -First 1
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest"
+
+          $asset = $release.assets |
+            Where-Object { $_.name -like "*release-msvc.7z" } |
+            Select-Object -First 1
 
           if (-not $asset) {
             Write-Error "Could not find Mesa3D release asset."
@@ -255,23 +421,44 @@ jobs:
           }
 
           $archive = "$env:TEMP\mesa3d.7z"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive
+
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile $archive
 
           $extractPath = "$env:TEMP\mesa3d"
-          & "C:\Program Files\7-Zip\7z.exe" x $archive -o"$extractPath" -y | Out-Null
 
-          # Back up the real opengl32.dll, then drop in the llvmpipe software one
+          & "C:\Program Files\7-Zip\7z.exe" `
+            x `
+            $archive `
+            -o"$extractPath" `
+            -y |
+            Out-Null
+
           $sys32 = "$env:WINDIR\System32\opengl32.dll"
 
           takeown /f $sys32 | Out-Null
-          icacls $sys32 /grant "*S-1-5-32-544:F" | Out-Null
+
+          icacls `
+            $sys32 `
+            /grant "*S-1-5-32-544:F" |
+            Out-Null
 
           if (-not (Test-Path "$sys32.bak")) {
-            Copy-Item $sys32 "$sys32.bak" -Force -ErrorAction SilentlyContinue
+            Copy-Item `
+              $sys32 `
+              "$sys32.bak" `
+              -Force `
+              -ErrorAction SilentlyContinue
           }
 
-          $llvmpipeDll = Get-ChildItem -Path $extractPath -Recurse -Filter "opengl32.dll" |
-            Where-Object { $_.FullName -like "*x64*" } |
+          $llvmpipeDll = Get-ChildItem `
+            -Path $extractPath `
+            -Recurse `
+            -Filter "opengl32.dll" |
+            Where-Object {
+              $_.FullName -like "*x64*"
+            } |
             Select-Object -First 1
 
           if (-not $llvmpipeDll) {
@@ -279,9 +466,12 @@ jobs:
             exit 1
           }
 
-          Copy-Item $llvmpipeDll.FullName $sys32 -Force
+          Copy-Item `
+            $llvmpipeDll.FullName `
+            $sys32 `
+            -Force
 
-          Write-Host "Mesa3D llvmpipe installed. Apps needing OpenGL now render in software."
+          Write-Host "Mesa3D llvmpipe installed."
 
       - name: Install Tailscale
         run: |
@@ -299,7 +489,9 @@ jobs:
             -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
             -Wait
 
-          Remove-Item $installerPath -Force
+          Remove-Item `
+            $installerPath `
+            -Force
 
           if (-not (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
             Write-Error "Tailscale installation failed."
@@ -323,18 +515,21 @@ jobs:
             exit 1
           }
 
-          # Wait for Tailscale IPv4 address
           $tsIP = $null
           $retries = 0
 
           while (-not $tsIP -and $retries -lt 20) {
-            $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1).Trim()
+            $tsIP = (
+              & $tailscale ip -4 2>$null |
+              Select-Object -First 1
+            ).Trim()
 
             if ($tsIP) {
               break
             }
 
             Write-Host "Waiting for Tailscale IP..."
+
             Start-Sleep -Seconds 5
             $retries++
           }
@@ -387,18 +582,26 @@ jobs:
           $deadline = [long]$env:DEADLINE
           $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 
-          # Start the next runner at ~5h10m, then stay alive ~25 more minutes
           $handoverAt = $now + (310 * 60)
           $endAt = $now + (335 * 60)
 
-          # Phase 1: keep the session alive
-          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $handoverAt) -and
-                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
-            try { Set-MpPreference -DisableRealtimeMonitoring $true } catch {}
+          while (
+            ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $handoverAt) -and
+            ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)
+          ) {
             try {
-              Stop-Service -Name WSearch, SysMain, DiagTrack -Force -ErrorAction SilentlyContinue
+              Set-MpPreference -DisableRealtimeMonitoring $true
             } catch {}
+
+            try {
+              Stop-Service `
+                -Name WSearch, SysMain, DiagTrack `
+                -Force `
+                -ErrorAction SilentlyContinue
+            } catch {}
+
             Write-Host "[$(Get-Date)] RDP Active - Runner is alive"
+
             Start-Sleep -Seconds 300
           }
 
@@ -409,10 +612,10 @@ jobs:
             exit 0
           }
 
-          # Phase 2: start the next runner
           Write-Host "Starting next runner..."
 
-          gh workflow run mika.yml `
+          # IMPORTANT: workflow file is mika-10.yml
+          gh workflow run windows-2022.yml `
             --repo ${{ github.repository }} `
             --ref ${{ github.ref_name }} `
             -f deadline=$deadline
@@ -420,12 +623,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Failed to start next runner."
           } else {
-            Write-Host "Next runner started. Check the Actions tab for the new IP and password."
+            Write-Host "Next runner started."
           }
 
-          # Phase 3: overlap so you have time to switch over
-          while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $endAt) -and
-                 ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
+          while (
+            ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $endAt) -and
+            ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)
+          ) {
             Write-Host "[$(Get-Date)] Handover - this runner is about to end"
+
             Start-Sleep -Seconds 60
           }
