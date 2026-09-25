@@ -83,12 +83,12 @@ jobs:
           # Turn off Defender real-time scanning
           try { Set-MpPreference -DisableRealtimeMonitoring $true } catch {}
 
-          # Stop and disable heavy background services
+          # Stop heavy background services, but leave them startable on demand (Manual)
           $services = @("WSearch", "wuauserv", "UsoSvc", "SysMain", "DiagTrack", "DoSvc", "MapsBroker")
           foreach ($svc in $services) {
             try {
               Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-              Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+              Set-Service -Name $svc -StartupType Manual -ErrorAction SilentlyContinue
             } catch {}
           }
 
@@ -125,6 +125,57 @@ jobs:
           } catch {}
 
           Write-Host "Windows lightened."
+
+      - name: Disable Recurring Maintenance Tasks
+        run: |
+          $tasks = @(
+            "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan",
+            "\Microsoft\Windows\Windows Defender\Windows Defender Verification",
+            "\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance",
+            "\Microsoft\Windows\Windows Defender\Windows Defender Cleanup",
+            "\Microsoft\Windows\UpdateOrchestrator\Schedule Scan",
+            "\Microsoft\Windows\UpdateOrchestrator\Schedule Scan Static Task",
+            "\Microsoft\Windows\TaskScheduler\Maintenance Configurator",
+            "\Microsoft\Windows\Maintenance\WinSAT"
+          )
+          foreach ($t in $tasks) {
+            try { Disable-ScheduledTask -TaskName ($t.Split('\')[-1]) -TaskPath ($t.Substring(0, $t.LastIndexOf('\') + 1)) -ErrorAction SilentlyContinue | Out-Null } catch {}
+          }
+
+          Write-Host "Recurring maintenance tasks disabled."
+
+      - name: Remove Bloatware
+        run: |
+          Write-Host "Removing bloatware..."
+
+          # Kill and disable OneDrive
+          try {
+            Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
+            Start-Process "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" -ArgumentList "/uninstall" -Wait -ErrorAction SilentlyContinue
+          } catch {}
+
+          # Remove default UWP apps nobody needs on a headless dev box
+          $apps = @(
+            "*Xbox*", "*Teams*", "*Skype*", "*ZuneMusic*", "*ZuneVideo*",
+            "*BingWeather*", "*BingNews*", "*GetHelp*", "*Getstarted*",
+            "*Messaging*", "*Office.OneNote*", "*People*", "*SolitaireCollection*",
+            "*WindowsMaps*", "*WindowsFeedbackHub*", "*YourPhone*", "*MixedReality*"
+          )
+          foreach ($app in $apps) {
+            Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue |
+              Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+          }
+
+          # Free disk space: strip unused pre-installed dev toolcaches from the runner image
+          $toolcache = "C:\hostedtoolcache\windows"
+          if (Test-Path $toolcache) {
+            $keep = @("node")  # keep only what this workflow might use; add more names to spare them
+            Get-ChildItem $toolcache -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $keep -notcontains $_.Name } |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Bloatware removed."
 
       - name: Create RDP User with Secure Password
         run: |
@@ -190,52 +241,6 @@ jobs:
           }
 
           Write-Host "RDP user created successfully."
-
-      - name: Install Visual Studio Code
-        run: |
-          Write-Host "Installing Visual Studio Code..."
-
-          $url = "https://update.code.visualstudio.com/latest/win32-x64/stable"
-          $installer = "$env:TEMP\vscode.exe"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          if (-not (Test-Path $installer)) {
-            Write-Error "VS Code installer was not downloaded."
-            exit 1
-          }
-
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList "/VERYSILENT", "/NORESTART", "/MERGETASKS=!runcode,desktopicon,addtopath" `
-            -Wait
-
-          Remove-Item $installer -Force -ErrorAction SilentlyContinue
-
-          # Check common installation paths
-          $vscodePaths = @(
-            "$env:ProgramFiles\Microsoft VS Code\Code.exe",
-            "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
-          )
-
-          $installed = $false
-
-          foreach ($path in $vscodePaths) {
-            if (Test-Path $path) {
-              Write-Host "VS Code installed at: $path"
-              $installed = $true
-              break
-            }
-          }
-
-          if (-not $installed) {
-            Write-Error "VS Code installation could not be verified."
-            exit 1
-          }
-
-          Write-Host "Visual Studio Code installed successfully."
 
       - name: Install Mesa3D (Software GPU - llvmpipe)
         run: |
@@ -374,9 +379,6 @@ jobs:
           Write-Host "Username: RDP"
           Write-Host "Password: $($env:RDP_CREDS)"
           Write-Host "=========================================="
-          Write-Host ""
-          Write-Host "Visual Studio Code is installed."
-          Write-Host "=========================================="
 
       - name: Maintain Connection
         env:
@@ -392,6 +394,10 @@ jobs:
           # Phase 1: keep the session alive
           while (([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $handoverAt) -and
                  ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -lt $deadline)) {
+            try { Set-MpPreference -DisableRealtimeMonitoring $true } catch {}
+            try {
+              Stop-Service -Name WSearch, SysMain, DiagTrack -Force -ErrorAction SilentlyContinue
+            } catch {}
             Write-Host "[$(Get-Date)] RDP Active - Runner is alive"
             Start-Sleep -Seconds 300
           }
