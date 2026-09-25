@@ -1,0 +1,16 @@
+name: Windows 7 Experiment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-7
+
+    steps:
+      - name: Check Windows Version
+        shell: powershell
+        run: |
+          Write-Host "Testing runner..."
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version, BuildNumber
