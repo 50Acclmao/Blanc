@@ -1,5 +1,5 @@
-name: RDP-1
-run-name: "RDP-1 #${{ github.run_number }} — ${{ github.event.inputs.deadline == '' && 'new session' || 'auto-continue' }}"
+name: RDP-2025
+run-name: "RDP-2025 #${{ github.run_number }} — ${{ github.event.inputs.deadline == '' && 'new session' || 'auto-continue' }}"
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   secure-rdp:
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
@@ -143,6 +143,39 @@ jobs:
           }
 
           Write-Host "Recurring maintenance tasks disabled."
+
+      - name: Remove Bloatware
+        run: |
+          Write-Host "Removing bloatware..."
+
+          # Kill and disable OneDrive
+          try {
+            Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
+            Start-Process "$env:SystemRoot\SysWOW64\OneDriveSetup.exe" -ArgumentList "/uninstall" -Wait -ErrorAction SilentlyContinue
+          } catch {}
+
+          # Remove default UWP apps nobody needs on a headless dev box
+          $apps = @(
+            "*Xbox*", "*Teams*", "*Skype*", "*ZuneMusic*", "*ZuneVideo*",
+            "*BingWeather*", "*BingNews*", "*GetHelp*", "*Getstarted*",
+            "*Messaging*", "*Office.OneNote*", "*People*", "*SolitaireCollection*",
+            "*WindowsMaps*", "*WindowsFeedbackHub*", "*YourPhone*", "*MixedReality*"
+          )
+          foreach ($app in $apps) {
+            Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue |
+              Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+          }
+
+          # Free disk space: strip unused pre-installed dev toolcaches from the runner image
+          $toolcache = "C:\hostedtoolcache\windows"
+          if (Test-Path $toolcache) {
+            $keep = @("node")  # keep only what this workflow might use; add more names to spare them
+            Get-ChildItem $toolcache -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $keep -notcontains $_.Name } |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Bloatware removed."
 
       - name: Create RDP User with Secure Password
         run: |
@@ -379,7 +412,7 @@ jobs:
           # Phase 2: start the next runner
           Write-Host "Starting next runner..."
 
-          gh workflow run windows-2022.yml `
+          gh workflow run mika.yml `
             --repo ${{ github.repository }} `
             --ref ${{ github.ref_name }} `
             -f deadline=$deadline
